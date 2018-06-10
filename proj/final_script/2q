@@ -1,0 +1,147 @@
+from math import *
+import random
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import numpy as np
+import rospy
+
+# landmarks which can be sensed by the robot (in meters)
+#landmarks = [[20.0, 20.0]]
+
+#landmarks = [[20.0, 20.0], [20.0, 80.0], [20.0, 50.0], [80.0, 20.0]]
+
+#pixel_meter = 0.003048
+# size of one dimension (in meters)
+world_x = 1400.0 #* pixel_meter
+world_y = 800.0 #* pixel_meter
+start_x = 300 #* pixel_meter
+start_y = 700 #* pixel_meter
+straightNoise = 1 #* pixel_meter
+turnNoise = 2.0*np.pi/72.0 #* pixel_meter
+senseNoise = 1#* pixel_meter
+
+landmarks = [[0.0, 100.0], [100.0, 600.0], [300.0, 200.0], [600.0, 200.0], [500.0, 600.0], [900.0, 700.0], [1200.0,100.0], [1200.0, 400.0]]
+class particle:
+    
+    def __init__(self):
+        
+        sigma = 20
+        self.x = sigma*np.random.randn()+ start_x        # robot's x coordinate
+        self.y = sigma*np.random.randn()+ start_y          # robot's y coordinate
+        self.angle = np.pi/2.0 + np.random.randn() * 2.0*np.pi/36.0   # robot's angle
+        self.weight = 0.0
+    def set(self, new_x, new_y, new_angle):
+       
+        self.x = float(new_x)
+        self.y = float(new_y)
+        self.angle = float(new_angle)
+
+    def turn(self, turn_angle):
+        angle = self.angle + float(turn_angle) + random.gauss(0.0, turnNoise)
+        angle = self.angle % (2*pi)
+        
+        new = particle()
+        new.set(self.x, self.y, angle)
+        return new
+               
+    def move(self, dx, dy, dtheta):
+        
+        # turn, and add randomness to the turning command
+        angle = self.angle + float(dtheta) + random.gauss(0.0, turnNoise)
+	if angle < 0:
+	    angle = angle + 2.0*np.pi
+	if angle > 2.0 * np.pi:
+	    angle = angle - 2.0*np.pi
+
+        # move, and add randomness to the motion command
+        x = self.x + dx + random.gauss(0.0, straightNoise) 
+        y = self.y + dy + random.gauss(0.0, straightNoise)
+	rospy.loginfo("__________MOVED________A PARTICLE")
+        # set particle
+        res = particle()
+        res.set(x, y, angle)
+
+        return res
+    
+
+    @staticmethod
+    def gaussian(mu, sigma, x):
+        # calculates the probability of x for 1-dim Gaussian with mean mu and var. sigma
+        return exp(- ((mu - x) ** 2) / (sigma ** 2) / 2.0) / sqrt(2.0 * pi * (sigma ** 2))
+
+
+    def measurement_prob(self, measurement):
+        prob_dist = 0.0
+        prob_angle = 0.0
+        thresh = .3
+        for i in range(len(measurement)):
+            measured_dist = measurement[i][1]
+            measured_angle = measurement[i][0]
+            
+            for j in range(len(landmarks)):
+                dist_particle_to_cylinder = sqrt((self.x - landmarks[i][0]) ** 2 + (self.y - landmarks[i][1]) ** 2)
+                angle_particle = np.arctan((self.x - landmarks[i][0])/(self.y - landmarks[i][1])) + (self.angle-np.pi/2)
+                dist_error = (measured_dist-dist_particle_to_cylinder)/dist_particle_to_cylinder
+                angle_error = (measured_angle-angle_particle)/angle_particle
+                if abs(angle_error * dist_error) < thresh:
+                    #Identified a matched cylinder
+		    rospy.loginfo("MATCHED CYLINDER")
+                    prob_dist = prob_dist + self.gaussian(dist_particle_to_cylinder, senseNoise, measured_dist)
+                    prob_angle = prob_angle + self.gaussian(angle_particle, senseNoise, measured_angle)
+        prob_angle = prob_angle/len(landmarks)
+        prob_dist = prob_dist/len(landmarks)
+        prob = prob_angle * prob_dist
+        return prob   
+
+def run((dx, dy, dtheta), cylinderInfo, particles):
+    print("WE ARE RUNNING")
+    n = 25
+    # The robot moves the delta amounts       
+    # Senses cylinder info
+   
+    # Update particles
+    p2 = []
+    for i in range(n):
+            
+        p2.append( particles[i].move(dx,dy, dtheta) )
+  
+
+    particles = p2
+        
+       
+    # generate particle weights depending on robot's measurement
+    w = []
+    if len(cylinderInfo) != 0:
+        for i in range(n):
+            particles[i].weight = (particles[i].measurement_prob(cylinderInfo))
+	    w.append(particles[i].weight)
+    else:
+	for i in range(n):
+	    w.append(particles[i].weight)
+    # resampling algorithm with the resampling wheel
+    #First we define our new particle array
+    new_particles = []
+
+    index = int(random.random() * n)
+    goalweight = 0.0
+    mw = max(w)
+
+    for i in range(n):
+        goalweight += random.random() * 2.0 * mw
+
+        #Pick the index with the greatest arc length on the wheel more often
+        while goalweight > w[index]:
+                
+            goalweight = goalweight - w[index]
+            index = (index + 1) % n
+
+        new_particles.append(particles[index])
+
+    # here we get a set of co-located particles
+    p = new_particles
+    max_index = np.argmax(w)
+    return (particles[max_index].x, particles[max_index].y, particles[max_index].angle)
+        
+    # visualize the current step
+    # visualization(myrobot, p2, new_particles, w)
+    

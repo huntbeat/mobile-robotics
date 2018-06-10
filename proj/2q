@@ -1,0 +1,213 @@
+#T!/usr/bin/env python
+
+import time
+import math
+import roslib
+import rospy
+import random
+import numpy as np
+import tf
+import tf2_ros
+import transform2d
+import argparse
+import pprint
+
+from geometry_msgs.msg import Twist
+from kobuki_msgs.msg import SensorState
+from nav_msgs.msg import Odometry
+from kobuki_msgs.msg import BumperEvent
+from sensor_msgs.msg import LaserScan
+import sensor_msgs.point_cloud2 as pc2
+import laser_geometry as laser
+
+from simple_plan import plan_path  
+
+import cv2
+from std_msgs.msg import String
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge, CvBridgeError
+
+PIXEL_METER = 0.003048
+INPUT = []   
+
+class Controller:
+
+    # called when an object of type Controller is created
+    def __init__(self):
+        rospy.loginfo('Initializing...')
+
+        # initialize rospy
+        rospy.init_node('simple')
+
+	self.path = []
+
+        self.cur_xyd = INPUT
+
+ 	self.start_xyd = (0,0,0)
+
+	self.cur_pixel = None
+	self.start_pixel = None
+
+	self.cur_pose = None
+	self.start_pose = None
+	self.odom_pose = None
+
+	self.max_x = 6 * 100 * PIXEL_METER
+	self.max_y = 6 * 100 * PIXEL_METER
+	self.cyl_r = 0.044	
+
+        self.state = 'wait'
+        self.is_bumped = False
+
+        self.odom = rospy.Subscriber('odom',
+                                     Odometry, self.odom_callback)
+
+        self.bridge = CvBridge()
+
+        self.image_sub = rospy.Subscriber("/camera/rgb/image_raw",
+            Image, self.camera_callback)
+
+        self.cmd_vel_pub = rospy.Publisher(
+            '/mobile_base/commands/velocity', Twist,
+            queue_size=10)
+
+	self.sensors = rospy.Subscriber('/mobile_base/sensors/core',
+                                        SensorState, self.sensor_callback)
+
+        self.bumper = rospy.Subscriber('/mobile_base/events/bumper',
+                                       BumperEvent, self.bumper_callback)
+
+        self.scan = rospy.Subscriber('/scan', LaserScan, self.scan_callback)
+
+        rospy.Timer(rospy.Duration(0.01), self.control_callback)
+
+    def sensor_callback(self, msg):
+	if msg.bumper:
+            rospy.loginfo('Got a bump!')
+        if msg.cliff:
+            rospy.loginfo('quitting because picked up/bumped')
+            rospy.signal_shutdown('safety stop')
+	rospy.loginfo('sensor call: %s seconds', time.time() - t0)
+
+    def bumper_callback(self, data):
+        rospy.loginfo('Got a bump!')
+        self.is_bumped = True
+	rospy.loginfo('bumper call: %s seconds', time.time() - t0)
+
+    def get_current_pose(self):
+        try:
+            ros_xform = self.odom_listener.lookupTransform(
+                '/odom', '/base_footprint', rospy.Time(0))
+            return transform2d.transform2d_from_ros_transform(ros_xform)
+        except tf.LookupException:
+            return None
+
+    # get /odom messages and convert to a transform2d
+    def odom_callback(self, msg):
+        self.odom_pose = transform2d.transform2d_from_ros_pose(msg.pose.pose)
+	self.cur_pixel = transform2d.Transform2D(x=self.cur_xyd[0],
+					y=self.cur_xyd[1],
+					theta=self.cur_xyd[2])
+	self.start_pixel = transform2d.Transform2D()
+	self.cur_pose = transform2d.Transform2D(x=PIXEL_METER*self.cur_xyd[0],
+					y=PIXEL_METER*self.cur_xyd[1],
+					theta=self.cur_xyd[2])
+	self.start_pose = transform2d.Transform2D()
+	self.rel_pixel = self.cur_pixel * self.start_pixel.inverse()
+	self.rel_pose = self.cur_pose * self.start_pose.inverse()
+
+    def scan_callback(self, msg):
+	self.ranges = list(msg.ranges)
+	self.angle_min = msg.angle_min #(-1*np.pi/6) 
+	self.angle_max = msg.angle_max
+	self.angle_increment = msg.angle_increment
+	rospy.loginfo('Scan complete, moving on!')
+	self.find_cylinder_distance()
+	rospy.loginfo('Done!')
+
+    # called 100 times per second
+    def control_callback(self, timer_event=None):
+
+	cmd_vel = Twist()
+
+        # Publish the command and save the previous output
+	cmd_vel.linear.x = 0
+	cmd_vel.linear.y = 0
+	cmd_vel.angular.z = 0
+        #self.cmd_vel_pub.publish(cmd_vel)
+        #self.prev_vel = cmd_vel
+
+    def find_cylinder_distance(self):
+	cylinder_found = False
+	for idx in range(0,len(self.ranges)):
+	    if not np.isnan(self.ranges[idx]):
+		laser_d = self.ranges[idx]
+	        laser_angle = self.angle_min + self.angle_increment*idx
+	        laser_pose = transform2d.Transform2D(x=laser_d*np.sin(laser_angle),
+						y=-1*laser_d*np.cos(laser_angle),
+						theta=laser_angle)
+		robot_to_laser = transform2d.Transform2D(x=0.0,y=0.10,theta=0.00001)
+		cylinder_xyd = laser_pose * robot_to_laser * self.cur_pose
+		cylinder_x = cylinder_xyd.x
+		cylinder_y = cylinder_xyd.y
+		cylinder_theta = cylinder_xyd.theta
+	        if (cylinder_x < self.max_x and cylinder_y < self.max_y 
+			and cylinder_x > -0.05 and cylinder_y > -0.05 and
+			not cylinder_found):
+	  	    rospy.loginfo('Found a cylinder.')
+		    cylinder_found = True
+                    left_index = idx
+		    #cylinder_found = True
+		    #cylinder_to_centroid = transform2d.Transform2D(x=self.cyl_r,y=0,theta=0)
+		    #centroid_xyd = cylinder_to_centroid * cylinder_xyd
+		    #robot_to_centroid = centroid_xyd * self.cur_pose.inverse()
+		    #centroid_distance = math.sqrt(robot_to_centroid.x**2 + robot_to_centroid.y**2)
+		    #centroid_angle = robot_to_centroid.theta-(np.pi/2)
+		    #centroid_info = (centroid_distance,centroid_angle)
+		    #rospy.loginfo('Found a cylinder! Here is the info: %s',cylinder_xyd)
+		    #rospy.loginfo('X and Y coordinates: %s',centroid_xyd)
+		    ##self.img = cv2.GaussianBlur(self.img,(5,5),0)
+		    ##b,g,r = (self.img[self.img.shape[0]/2,left_index,0],
+		    ##            self.img[self.img.shape[0]/2,left_index,1],
+		    ##            self.img[self.img.shape[0]/2,left_index,2])
+		    ##total = b+g+r
+		    ##b,g,r = (b,g,r)/total
+		
+	        if (cylinder_x > self.max_x or cylinder_y > self.max_y 
+			or cylinder_x < 0.0 or cylinder_y < 0.0) and cylinder_found:
+		    cylinder_found = False
+		    rospy.loginfo('End of one cylinder')
+		    right_index = idx
+		    center_index = (left_index+right_index)/2
+		    rospy.loginfo('Location of the cylinder is: %s', center_index)
+		    rospy.loginfo('Width of cylinder is: %s', right_index-left_index)
+
+    def camera_callback(self, data):
+        self.img = self.bridge.imgmsg_to_cv2(data, "bgr8")	
+	cv2.imshow('Image', self.img)
+	while cv2.waitKey(3) > 0: pass;
+
+    # called by main function below (after init)
+    def run(self):
+        # timers and callbacks are already set up, so just spin.
+        # if spin returns we were interrupted by Ctrl+C or shutdown
+	rospy.spin()
+
+# main function
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("sx", help="Starting position in x", type=int)
+    parser.add_argument("sy", help="Starting position in y", type=int)
+    parser.add_argument("sd", help="Starting orientation, from 0 to 3", type=int)
+    args = parser.parse_args()
+
+    pprint.pprint(args)
+
+    INPUT = (args.sx, args.sy, args.sd*np.pi/2+0.00001)
+
+    try:
+        ctrl = Controller()
+        ctrl.run()
+    except rospy.ROSInterruptException:
+        pass

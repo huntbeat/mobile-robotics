@@ -1,0 +1,46 @@
+#Particle Filter implementation
+#A particle is a discrete guess of where a robot may be
+dict = {}
+dict[stateHypothesis] = weight
+#First robot estimates a uniform distribution of particles it could be at. 
+#Second, add weights to particles based on measurents to cylinders
+#Add bearing noise to measurements (guassian centers around mean 0)
+#Normalize weights
+#Resamples
+#Resampling wheel
+ 
+#Propogate given particles if their weight is
+class particle:
+    def __init__(self):
+        self.x = random.random()*world_x
+        self.y = random.random()*world_y
+    def normal(mu, sigma, x):
+        return exp(-((mu - x) ** 2) / (sigma ** 2) / 2.0) / sqrt(2.0 * pi * (sigma * * 2))
+    def sense()
+    
+    def calculateProb
+ 
+#We assume mu is distance and sigma is std deviation and x is laser distance
+
+
+def calcDistances():
+    for each beacon:
+        call laser
+        
+        
+#Initialize particles at random locations
+particles = []
+for i in range(1000):
+    temp_particle = particle()
+    particles.append(temp_particle)
+
+#Main robot senses how far it is from all the beacons. It calculates the coordinates of beacons
+
+#Initialize weights (corresponds 1-1 with particles)
+weights = []
+for i in range(1000):
+    weights.append(particles[i].calculateProb(calcCoordinates, actualCoordinates)
+
+#Resampling: Allow the particles to survive at random but the probability of survival is based on weights.  
+for i in range(1000):
+    
